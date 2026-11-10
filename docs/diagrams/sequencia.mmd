@@ -1,0 +1,115 @@
+sequenceDiagram
+    autonumber
+
+    box rgba(100, 116, 139, 0.12) Externos e Visão Computacional
+        participant VMS as SistemaVMS<br/>(Externo)
+        participant Worker as WorkerVisao<br/>Computacional
+        participant Storage as ObjectStorage<br/>Gateway (MinIO)
+    end
+    box rgba(234, 88, 12, 0.12) Mensageria e Alertas
+        participant Notif as Servico<br/>Notificacoes
+        participant Broker as RabbitMQ<br/>Broker
+    end
+    box rgba(37, 99, 235, 0.12) Dados e Core Backend (FastAPI)
+        participant Repo as SafeLine<br/>Repository (PG16)
+        participant NCSvc as NaoConformidade<br/>Service
+        participant OcorrenciaSvc as Ocorrencia<br/>Service
+        participant Ctrl as Ocorrencia<br/>Controller
+    end
+    box rgba(14, 165, 233, 0.12) Portal e Auditoria Humana
+        participant Portal as PortalWeb<br/>SafeLine (React)
+        actor Tecnico as Técnico de<br/>Segurança
+    end
+
+    loop Monitoramento contínuo por posto [enquanto política ativa]
+        Worker->>VMS: capturarFrameRTSP(postoId, cameraId)
+        VMS-->>Worker: FrameVideoDTO<br/>(frameBytes, timestamp, postoId)
+        Worker->>Worker: inferirEPIeErgonomiaSemFacial<br/>(FrameVideoDTO)
+
+        alt Desvio detectado com confiança >= limiarPolitica
+            par Upload de evidência anonimizada (Claim Check)
+                Worker->>Storage: salvarEvidenciaAnonimizada<br/>(frameBytes, EvidenciaMetaDTO)
+                Storage-->>Worker: EvidenciaUrlDTO<br/>(evidenciaKey, sha256Hash)
+            and Consulta de regras do posto
+                Worker->>Ctrl: getPoliticaMonitoramento(postoId)
+                Ctrl-->>Worker: PoliticaMonitoramentoDTO<br/>(limiar, janelaDebounceSeg, regrasEPI)
+            end
+            Worker-)Broker: publicarDeteccao<br/>(DeteccaoRegistradaEventDTO)
+        else Quadro em conformidade ou confiança abaixo do limiar
+            Worker->>Worker: descartarQuadroConforme<br/>(postoId, timestamp)
+        end
+    end
+
+    Note over Worker,OcorrenciaSvc: Regra SafeLine: uma detecção NUNCA gera NC automática
+
+    Broker-)OcorrenciaSvc: consumirDeteccao<br/>(DeteccaoRegistradaEventDTO)
+    activate OcorrenciaSvc
+    OcorrenciaSvc->>Repo: salvarDeteccao(DeteccaoCreateDTO)
+    Repo-->>OcorrenciaSvc: DeteccaoPersistidaDTO(deteccaoId)
+    OcorrenciaSvc->>Repo: verificarOcorrenciaAtivaNaJanela<br/>(postoId, tipoDesvio, janelaDebounceSeg)
+    Repo-->>OcorrenciaSvc: DuplicidadeResultDTO<br/>(existeAtiva, ocorrenciaAtivaId)
+
+    alt existeAtiva == false — Abrir nova ocorrência pendente
+        OcorrenciaSvc->>Repo: salvarOcorrencia(OcorrenciaCreateDTO)
+        Repo-->>OcorrenciaSvc: OcorrenciaDTO<br/>(ocorrenciaId, PENDENTE_VALIDACAO, versao=1)
+        OcorrenciaSvc-)Broker: publicarOcorrenciaCriada<br/>(OcorrenciaCriadaEventDTO)
+        Broker-)Notif: enviarAlertaTecnico<br/>(AlertaOcorrenciaDTO)
+    else existeAtiva == true — Agrupar detecção por janela de debounce
+        OcorrenciaSvc->>Repo: vincularDeteccaoAOcorrencia<br/>(ocorrenciaAtivaId, deteccaoId)
+        Repo-->>OcorrenciaSvc: VinculoAtualizadoDTO(totalDeteccoes)
+    end
+    deactivate OcorrenciaSvc
+
+    Note over Ctrl,Tecnico: Fluxo de Validação Humana (Human-in-the-loop)
+
+    Tecnico->>Portal: abrirPainelAuditoria(ocorrenciaId)
+    Portal->>Ctrl: getOcorrenciaParaValidacao<br/>(ocorrenciaId, tokenJwt)
+    activate Ctrl
+    Ctrl->>OcorrenciaSvc: obterOcorrenciaDetalhada(ocorrenciaId)
+    activate OcorrenciaSvc
+    OcorrenciaSvc->>Repo: buscarOcorrenciaComDeteccoes(ocorrenciaId)
+    Repo-->>OcorrenciaSvc: OcorrenciaCompletaDTO
+    OcorrenciaSvc->>Storage: gerarUrlPreAssinada(evidenciaKey)
+    Storage-->>OcorrenciaSvc: UrlTemporariaDTO<br/>(urlAssinada, expiraEm)
+    OcorrenciaSvc-->>Ctrl: OcorrenciaDetalheDTO
+    deactivate OcorrenciaSvc
+    Ctrl-->>Portal: HTTP 200 OK (OcorrenciaDetalheDTO)
+    deactivate Ctrl
+    Portal-->>Tecnico: exibirEvidenciaERegras<br/>(OcorrenciaDetalheDTO)
+
+    Tecnico->>Portal: submeterValidacao<br/>(ValidarOcorrenciaRequestDTO)
+    Portal->>Ctrl: postValidarOcorrencia<br/>(ocorrenciaId, ValidarOcorrenciaRequestDTO, tokenJwt)
+    activate Ctrl
+    Ctrl->>OcorrenciaSvc: validarOcorrencia<br/>(ocorrenciaId, ValidarOcorrenciaRequestDTO)
+    activate OcorrenciaSvc
+    OcorrenciaSvc->>Repo: buscarOcorrenciaPorId(ocorrenciaId)
+    Repo-->>OcorrenciaSvc: OcorrenciaDTO(estadoAtual, versaoAtual)
+
+    alt versaoInformada != versaoAtual ou estadoAtual in [CONFIRMADA, DESCARTADA, EXPIRADA]
+        OcorrenciaSvc-->>Ctrl: ErroConflitoEstadoDTO<br/>(codigo=409, mensagem)
+        Ctrl-->>Portal: HTTP 409 Conflict<br/>(ErroConflitoEstadoDTO)
+        Portal-->>Tecnico: notificarConflitoValidacao<br/>(ErroConflitoEstadoDTO)
+    else decisao == CONFIRMAR e versaoInformada == versaoAtual
+        OcorrenciaSvc->>Repo: atualizarEstadoOcorrencia<br/>(ocorrenciaId, CONFIRMADA, versaoAtual)
+        Repo-->>OcorrenciaSvc: OcorrenciaDTO<br/>(estado=CONFIRMADA, versao=versaoAtual+1)
+        OcorrenciaSvc->>NCSvc: registrarNaoConformidade<br/>(NaoConformidadeCreateDTO)
+        activate NCSvc
+        NCSvc->>Repo: salvarNaoConformidade<br/>(NaoConformidadeCreateDTO)
+        Repo-->>NCSvc: NaoConformidadeDTO<br/>(ncId, severidade, prazoCorrecao)
+        NCSvc-)Broker: publicarNaoConformidadeRegistrada<br/>(NaoConformidadeEventDTO)
+        Broker-)Notif: enviarAlertaSupervisor<br/>(AlertaNaoConformidadeDTO)
+        NCSvc-->>OcorrenciaSvc: NaoConformidadeDTO
+        deactivate NCSvc
+        OcorrenciaSvc-->>Ctrl: ValidacaoResultadoDTO<br/>(estado=CONFIRMADA, ncId)
+        Ctrl-->>Portal: HTTP 200 OK (ValidacaoResultadoDTO)
+        Portal-->>Tecnico: exibirConfirmacaoNC<br/>(ValidacaoResultadoDTO)
+    else decisao == DESCARTAR e justificativaValida e versaoInformada == versaoAtual
+        OcorrenciaSvc->>Repo: atualizarEstadoOcorrencia<br/>(ocorrenciaId, DESCARTADA, versaoAtual)
+        Repo-->>OcorrenciaSvc: OcorrenciaDTO<br/>(estado=DESCARTADA, versao=versaoAtual+1)
+        OcorrenciaSvc-)Broker: publicarFeedbackFalsoPositivo<br/>(FeedbackIAEventDTO)
+        OcorrenciaSvc-->>Ctrl: ValidacaoResultadoDTO<br/>(estado=DESCARTADA, ncId=null)
+        Ctrl-->>Portal: HTTP 200 OK (ValidacaoResultadoDTO)
+        Portal-->>Tecnico: exibirOcorrenciaDescartada<br/>(ValidacaoResultadoDTO)
+    end
+    deactivate OcorrenciaSvc
+    deactivate Ctrl
