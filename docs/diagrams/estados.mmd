@@ -1,0 +1,47 @@
+stateDiagram-v2
+    [*] --> Detectada : receberDeteccaoIA [confianca >= limiarPolitica] / persistirDeteccao()
+
+    Detectada : entry / registrarTimestampEHashEvidencia()
+    Detectada : do / avaliarPoliticaComplianceEDebounce()
+
+    Detectada --> Suprimida : filtrarDuplicidade [ocorrenciaAtivaNaJanela] / vincularDeteccaoExistente()
+    Detectada --> EmAuditoria : abrirOcorrencia [semDuplicidadeNaJanela] / criarOcorrenciaPendente()
+
+    Suprimida : entry / incrementarContadorReincidencia()
+    Suprimida --> [*] : encerrarSupressao [vinculoPersistido] / registrarTelemetria()
+
+    state EmAuditoria {
+        [*] --> PendenteValidacao
+        PendenteValidacao : entry / publicarOcorrenciaCriada()
+        PendenteValidacao : do / aguardarValidacaoHumana()
+        PendenteValidacao : validarConcorrente [versaoInformada != versaoAtual] / rejeitarConflitoHttp409()
+
+        PendenteValidacao --> EmAnaliseTecnica : iniciarRevisao [tecnicoAutenticado] / adquirirLockOtimista()
+        EmAnaliseTecnica : entry / registrarInicioRevisao()
+        EmAnaliseTecnica : do / exibirEvidenciaERegrasPosto()
+        EmAnaliseTecnica : validarConcorrente [versaoInformada != versaoAtual] / rejeitarConflitoHttp409()
+        EmAnaliseTecnica : exit / incrementarVersaoEntidade()
+
+        EmAnaliseTecnica --> AguardandoComplemento : solicitarEvidencia [evidenciaInsuficiente] / requisitarSnapshotVMS()
+        AguardandoComplemento : entry / notificarPendenteComplemento()
+        AguardandoComplemento --> EmAnaliseTecnica : anexarEvidencia [snapshotValido] / atualizarEvidenciaKey()
+
+        EmAnaliseTecnica --> PendenteValidacao : devolverParaFila [revisaoInterrompida] / liberarLockOtimista()
+    }
+
+    EmAuditoria --> Confirmada : validarOcorrencia [decisao == CONFIRMAR e versaoValida] / registrarNaoConformidade()
+    EmAuditoria --> Descartada : descartarOcorrencia [decisao == DESCARTAR e justificativaPreenchida] / registrarFalsoPositivo()
+    EmAuditoria --> Expirada : expirarSlaAuditoria [tempoDecorrido excede slaPolitica] / registrarExpiracaoSla()
+
+    Confirmada : entry / persistirNaoConformidadeVinculada()
+    Confirmada : do / notificarSupervisorProducao()
+    Confirmada : exit / gravarTrilhaAuditoriaImutavel()
+
+    Descartada : entry / registrarJustificativaDescarte()
+    Descartada : do / publicarFeedbackFalsoPositivo()
+
+    Expirada : entry / notificarEngenheiroSeguranca()
+
+    Confirmada --> [*] : finalizarFluxo [ncPersistida e supervisorNotificado] / arquivarOcorrencia()
+    Descartada --> [*] : finalizarFluxo [justificativaSalva] / arquivarOcorrencia()
+    Expirada --> [*] : finalizarFluxo [slaRegistrado] / arquivarOcorrencia()
