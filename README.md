@@ -8,7 +8,7 @@
 
 ---
 
-## 1. Contextualização e Funcionalidade Crítica Selecionada
+## 1. Contextualização, Funcionalidade Crítica e Estrutura
 
 O **SAFELINE** é um Sistema de Compliance, Segurança do Trabalho e Ergonomia voltado ao monitoramento de uso de Equipamentos de Proteção Individual (EPIs) e condições ergonômicas observáveis em linhas de produção industriais por meio de visão computacional.
 
@@ -22,9 +22,7 @@ Os modelos deste dossiê incorporam integralmente as decisões arquiteturais e d
 3. **Privacidade por Design (sem reconhecimento facial inicial):** a análise computacional identifica ausência de EPIs e posturas críticas associadas ao **Posto de Trabalho / Atividade**, anonimizando as evidências armazenadas sem biometria facial do colaborador.
 4. **Escopo ergonômico observável:** a câmera analisa apenas indicadores ergonômicos observáveis configurados na `PoliticaDeMonitoramento`, sem substituir a avaliação ergonômica clínica completa.
 
----
-
-## 2. Estrutura do Repositório
+### Estrutura do Repositório
 
 ```text
 aps3-felipe-heiras/
@@ -41,7 +39,7 @@ aps3-felipe-heiras/
 
 ---
 
-## 3. Artefato 1 — Diagrama de Sequência (`sequencia.mmd`)
+## 2. Artefato 1 — Diagrama de Sequência (`sequencia.mmd`)
 
 **Arquivo fonte:** [`docs/diagrams/sequencia.mmd`](docs/diagrams/sequencia.mmd)
 
@@ -186,7 +184,7 @@ sequenceDiagram
 
 ---
 
-## 4. Artefato 2 — Diagrama de Atividades com Raias (`atividades.mmd`)
+## 3. Artefato 2 — Diagrama de Atividades com Raias (`atividades.mmd`)
 
 **Arquivo fonte:** [`docs/diagrams/atividades.mmd`](docs/diagrams/atividades.mmd)
 
@@ -303,7 +301,7 @@ flowchart TD
 
 ---
 
-## 5. Artefato 3 — Diagrama de Transição de Estados (`estados.mmd`)
+## 4. Artefato 3 — Diagrama de Transição de Estados (`estados.mmd`)
 
 **Arquivo fonte:** [`docs/diagrams/estados.mmd`](docs/diagrams/estados.mmd)
 
@@ -366,13 +364,13 @@ stateDiagram-v2
 
 ---
 
-## 6. Artefato 4 — Visão Arquitetural Macro C4 (`workspace.dsl` + Mermaid C4)
+## 5. Artefato 4 — Visão Arquitetural Macro C4 (`workspace.dsl` + Mermaid C4)
 
 **Arquivo fonte Structurizr DSL:** [`docs/architecture/workspace.dsl`](docs/architecture/workspace.dsl) *(contém C4 Nível 1 — Contexto, C4 Nível 2 — Contêineres e C4 Nível 3 — Componentes)*
 
 Abaixo estão espelhadas as visões **C4 Nível 2 (Contêineres)** e **C4 Nível 3 (Componentes da API Core)** em **Mermaid (`flowchart` com notação e paleta C4)** para renderização nativa no GitHub sem sobreposição de setas ou rótulos, mantendo total equivalência com o modelo em [`workspace.dsl`](docs/architecture/workspace.dsl).
 
-### 6.1. C4 Nível 2 — Diagrama de Contêineres
+### 5.1. C4 Nível 2 — Diagrama de Contêineres
 
 ```mermaid
 flowchart TB
@@ -420,7 +418,7 @@ flowchart TB
     apiCore -->|"Solicita envio de alertas<br/>[HTTPS / REST]"| notificacoes
 ```
 
-### 6.2. C4 Nível 3 — Diagrama de Componentes da API Core SafeLine
+### 5.2. C4 Nível 3 — Diagrama de Componentes da API Core SafeLine
 
 ```mermaid
 flowchart TB
@@ -479,7 +477,7 @@ flowchart TB
 
 ---
 
-## 7. Artefato 5 — Registro de Decisão Arquitetural (`ADR 0001`)
+## 6. Artefato 5 — Registro de Decisão Arquitetural (`ADR 0001`)
 
 **Arquivo fonte:** [`docs/architecture/adr-0001.md`](docs/architecture/adr-0001.md)
 
@@ -494,7 +492,9 @@ flowchart TB
 
 ---
 
-## 8. Matriz de Consistência Lógica entre Modelos
+## 7. Consistência Lógica entre Modelos e Declaração de Autoria
+
+### Matriz de Consistência Lógica entre Modelos
 
 | Etapa do Fluxo | Sequência (`sequencia.mmd`) | Atividades (`atividades.mmd`) | Estados (`estados.mmd`) | C4 (`workspace.dsl`) |
 |---|---|---|---|---|
@@ -504,9 +504,7 @@ flowchart TB
 | **4. Auditoria Humana e Lock Otimista** | `Tecnico` -> `Portal` -> `Ctrl.postValidarOcorrencia` -> `alt` `409 Conflict` / `CONFIRMAR` / `DESCARTAR` | Raia 3 (`DecHumana`) -> Raia 2 (`ValidarLock` / `DecConcorrencia`) | `EmAnaliseTecnica` (`exit / incrementarVersaoEntidade()`); transição interna `409` em `EmAuditoria` | `Portal Web (React)` -> `OcorrenciaController` -> `OcorrenciaService` |
 | **5. Emissão de NC e Alerta** | `NCSvc.registrarNaoConformidade` -> `Repo` -> `Broker-)Notif.enviarAlertaSupervisor` | Raia 2 (`RegistrarNC`) -> **ForkNC** -> (Raia 4 `NotificarSup` \|\| `GravarAudit`) -> **JoinNC** -> `Fim` | `EmAuditoria --> Confirmada` (`entry / persistirNaoConformidadeVinculada()`, `do / notificarSupervisorProducao()`) -> `[*]` | `NaoConformidadeService` -> `RabbitMQBroker` -> `NotificacaoGateway` -> `Notificações` |
 
----
-
-## 9. Declaração de Autoria Individual
+### Declaração de Autoria Individual
 
 Declaro que este Dossiê de Arquitetura Viva (modelos UML em Mermaid, visão arquitetural C4 em Structurizr DSL / Mermaid e registro ADR 0001) foi elaborado individualmente por **Felipe Heiras** para a **Avaliação Prática Supervisionada (APS 3)** da disciplina de **Modelagem de Software (UniSenai)**, refletindo a funcionalidade crítica selecionada para o projeto **SAFELINE**.
 
