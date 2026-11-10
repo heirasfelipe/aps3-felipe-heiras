@@ -1,0 +1,100 @@
+flowchart TD
+    classDef startEnd fill:#111827,stroke:#111827,color:#ffffff,font-weight:bold
+    classDef forkJoin fill:#1e293b,stroke:#0f172a,color:#ffffff,stroke-width:3px,font-weight:bold
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#111827,stroke-width:2px
+    classDef action fill:#ffffff,stroke:#334155,color:#0f172a,stroke-width:1.5px
+    classDef errorAction fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:1.5px
+
+    subgraph RaiaVMS["Raia 1 — VMS e Worker de Visão Computacional"]
+        Start(["Início"]):::startEnd
+        CapFrame["Capturar quadro RTSP do VMS<br/>e executar inferência EPI/Ergonomia<br/>(sem reconhecimento facial)"]:::action
+        DecLimiar{"Desvio detectado e<br/>confiança >= limiar?"}:::decision
+        DescartarQuadro["Descartar quadro em conformidade<br/>e manter ciclo de captura"]:::action
+        ForkWorker["━━━ FORK: Processamento Paralelo no Worker ━━━"]:::forkJoin
+        UploadMinIO["Anonimizar e gravar snapshot<br/>no Object Storage (MinIO/S3)"]:::action
+        EnriquecerMeta["Consultar política do posto e<br/>montar DeteccaoRegistradaEventDTO"]:::action
+        JoinWorker["━━━ JOIN: Sincronização Evidência + Metadados ━━━"]:::forkJoin
+        PublicarDeteccao["Publicar DeteccaoRegistradaEvent<br/>no RabbitMQ (AMQP)"]:::action
+    end
+
+    subgraph RaiaBackend["Raia 2 — Core Backend SafeLine (FastAPI / RabbitMQ / PostgreSQL 16)"]
+        ConsumirDeteccao["Consumir DeteccaoRegistradaEvent<br/>e persistir Deteccao no PostgreSQL"]:::action
+        DecDebounce{"Existe ocorrência ativa<br/>similar na janela<br/>de debounce?"}:::decision
+        VincularExistente["Vincular detecção à ocorrência ativa<br/>(suprimir duplicidade)"]:::action
+        CriarOcorrencia["Criar OcorrenciaDeSeguranca<br/>(estado = PENDENTE_VALIDACAO, versao = 1)"]:::action
+        ForkAbertura["━━━ FORK: Disponibilização e Alerta Assíncrono ━━━"]:::forkJoin
+        DisponibilizarPainel["Disponibilizar ocorrência e URL<br/>pré-assinada no painel de auditoria"]:::action
+        PublicarOcorrencia["Publicar OcorrenciaCriadaEvent<br/>no RabbitMQ"]:::action
+        JoinAbertura["━━━ JOIN: Ocorrência Pronta para Auditoria Humana ━━━"]:::forkJoin
+        ValidarLock["Verificar versão otimista e<br/>estado atual da ocorrência"]:::action
+        DecConcorrencia{"Versão informada == versão atual<br/>e estado em auditoria?"}:::decision
+        Rejeitar409["Rejeitar transição com HTTP 409 Conflict<br/>(proteção contra estado corrompido)"]:::errorAction
+        RegistrarNC["Atualizar ocorrência para CONFIRMADA<br/>e registrar NaoConformidade no PostgreSQL"]:::action
+        RegistrarDescarte["Atualizar ocorrência para DESCARTADA<br/>e publicar FeedbackIAEvent (falso positivo)"]:::action
+    end
+
+    subgraph RaiaTecnico["Raia 3 — Técnico de Segurança (Portal Web React)"]
+        ReceberAlertaTec["Acessar ocorrência pendente<br/>e revisar evidência + regras do posto"]:::action
+        DecHumana{"Decisão humana<br/>do Técnico de<br/>Segurança?"}:::decision
+        ConfirmarDesvio["Submeter validação:<br/>decisao = CONFIRMAR"]:::action
+        DescartarDesvio["Submeter validação:<br/>decisao = DESCARTAR + justificativa"]:::action
+        VisualizarConflito["Exibir aviso de ocorrência<br/>já auditada por outro técnico"]:::errorAction
+    end
+
+    subgraph RaiaNotif["Raia 4 — Serviço Corporativo de Notificações e Supervisor"]
+        NotificarTec["Entregar alerta de nova ocorrência<br/>ao Técnico de Segurança"]:::action
+        ForkNC["━━━ FORK: Pós-Confirmação de Não Conformidade ━━━"]:::forkJoin
+        NotificarSup["Publicar NaoConformidadeEvent e<br/>alertar Supervisor de Produção"]:::action
+        GravarAudit["Gravar trilha imutável de auditoria<br/>e atualizar indicadores de compliance"]:::action
+        JoinNC["━━━ JOIN: Sincronização Pós-NC ━━━"]:::forkJoin
+        Fim(["Fim"]):::startEnd
+    end
+
+    Start --> CapFrame
+    CapFrame --> DecLimiar
+    DecLimiar -->|"[confianca abaixo do limiar ou conforme]"| DescartarQuadro
+    DescartarQuadro --> CapFrame
+    DecLimiar -->|"[desvio == true e confianca >= limiarPolitica]"| ForkWorker
+
+    ForkWorker --> UploadMinIO
+    ForkWorker --> EnriquecerMeta
+    UploadMinIO --> JoinWorker
+    EnriquecerMeta --> JoinWorker
+    JoinWorker --> PublicarDeteccao
+
+    PublicarDeteccao --> ConsumirDeteccao
+    ConsumirDeteccao --> DecDebounce
+    DecDebounce -->|"[existeOcorrenciaAtiva == true]"| VincularExistente
+    VincularExistente --> Fim
+    DecDebounce -->|"[existeOcorrenciaAtiva == false]"| CriarOcorrencia
+
+    CriarOcorrencia --> ForkAbertura
+    ForkAbertura --> DisponibilizarPainel
+    ForkAbertura --> PublicarOcorrencia
+    PublicarOcorrencia --> NotificarTec
+    DisponibilizarPainel --> JoinAbertura
+    NotificarTec --> JoinAbertura
+
+    JoinAbertura --> ReceberAlertaTec
+    ReceberAlertaTec --> DecHumana
+    DecHumana -->|"[decisao == CONFIRMAR]"| ConfirmarDesvio
+    DecHumana -->|"[decisao == DESCARTAR e justificativaValida]"| DescartarDesvio
+
+    ConfirmarDesvio --> ValidarLock
+    DescartarDesvio --> ValidarLock
+    ValidarLock --> DecConcorrencia
+
+    DecConcorrencia -->|"[versaoValida == false ou estadoTerminal]"| Rejeitar409
+    Rejeitar409 --> VisualizarConflito
+    VisualizarConflito --> Fim
+
+    DecConcorrencia -->|"[versaoValida == true e decisao == DESCARTAR]"| RegistrarDescarte
+    RegistrarDescarte --> Fim
+
+    DecConcorrencia -->|"[versaoValida == true e decisao == CONFIRMAR]"| RegistrarNC
+    RegistrarNC --> ForkNC
+    ForkNC --> NotificarSup
+    ForkNC --> GravarAudit
+    NotificarSup --> JoinNC
+    GravarAudit --> JoinNC
+    JoinNC --> Fim
